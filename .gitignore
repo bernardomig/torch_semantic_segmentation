@@ -127,3 +127,9 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# vscode workspace library
+.vscode
+
+# add mlflow mlruns directory
+mlruns
