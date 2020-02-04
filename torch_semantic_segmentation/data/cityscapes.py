@@ -1,6 +1,7 @@
 import os
 import cv2
 import numpy as np
+import torch
 from numpy import array
 
 from torch.utils.data import Dataset
@@ -48,7 +49,7 @@ class CityScapesDataset(Dataset):
                     labels_dir, city, id + '_gtFine_labelIds.png')
                 yield {
                     'image': img,
-                    'mask': label,
+                    'label': label,
                 }
 
     def __len__(self):
@@ -66,6 +67,8 @@ class CityScapesDataset(Dataset):
         label = cv2.imread(label, cv2.IMREAD_GRAYSCALE)
         label = TRAIN_MAPPING[label]
 
-        augmented = self.transforms(image=image, mask=label)
-
-        return augmented['image'], augmented['mask'].long()
+        if self.transforms is not None:
+            augmented = self.transforms(image=image, mask=label)
+            return augmented['image'], augmented['mask'].long()
+        else:
+            return torch.from_numpy(image), torch.from_numpy(label).long()

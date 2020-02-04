@@ -1,173 +1,267 @@
-import tempfile
+from functools import partial
+from torch.utils.data import DataLoader
+from torch_semantic_segmentation.metrics import RunningMetric, AveragedMetric
+from torch_semantic_segmentation.metrics import accuracy, miou, confusion_matrix
 import os
+import tempfile
+from tqdm import tqdm
+
+from mlflow import (log_metrics, log_params, log_artifacts, start_run, end_run)
 
 import numpy as np
 import torch
 from torch import nn
 
-from tqdm.auto import tqdm
+from mlflow import (
+    log_artifact, log_metric, log_param, log_metrics, log_params)
 
 import argparse
-
 import logging
 
-from ignite.contrib.metrics import GpuInfo
-from ignite.contrib.handlers import ProgressBar
-from ignite.handlers import ModelCheckpoint
-from ignite.metrics import (
-    Accuracy, Loss, IoU, ConfusionMatrix, RunningAverage, mIoU)
-from ignite.engine import (
-    Events, create_supervised_trainer, create_supervised_evaluator)
-from torch.optim.lr_scheduler import ExponentialLR, LambdaLR, OneCycleLR
-from ignite.contrib.handlers import LRScheduler
-
-from mlflow import (
-    log_artifact, log_metric, log_param, log_metrics, log_params, set_tags)
-
-from torch.utils.data import DataLoader
-
-from albumentations import (
-    Compose, Normalize,
-    RandomResizedCrop,
-    HorizontalFlip,
-    Rotate,
-    Resize,
-    RandomBrightnessContrast,
-    RandomBrightness,
-    RandomCrop,
-    RandomScale,
-    RandomSizedCrop,
-    RandomGamma,
-)
-from albumentations.pytorch import ToTensorV2
-
-from torch_semantic_segmentation.models import ENet, FastSCNN
-
-from torch_semantic_segmentation.data import DeepDriveDataset
+logging.basicConfig(level=logging.INFO)
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--model', required=True, type=str)
-parser.add_argument('--batch-size', required=True, type=int)
-parser.add_argument('--device', required=True, type=str)
-parser.add_argument('--epochs', required=True, type=int)
-parser.add_argument('--learning-rate', required=True, type=float)
-
+parser.add_argument('--model', type=str,
+                    help='the name of the model to train',
+                    choices=['enet'], required=True)
+parser.add_argument('--batch-size', type=int,
+                    help='the batch size',
+                    required=True)
+parser.add_argument('--device', type=int,
+                    help='the device to train the model on (for example, cuda:0)',
+                    default=0)
+parser.add_argument('--epochs', type=int,
+                    help='the number of epochs to train the model',
+                    required=True)
+parser.add_argument('--lr', type=float,
+                    help='the learning rate',
+                    required=True)
+parser.add_argument('--crop-size', type=int,
+                    help='the crop size to train the model on (for example, --crop-size 512 256)',
+                    required=True, nargs=2)
+parser.add_argument('--scaling', type=float,
+                    help='the limits of the range of scaling',
+                    required=True, nargs=2)
+parser.add_argument('--loss-fn', type=str,
+                    help='the name of the loss function to train the model',
+                    default='cross-entropy')
+parser.add_argument('--evaluate-freq', type=int,
+                    help='perform the evaluation every n epochs',
+                    default=5)
 args = parser.parse_args()
 
-log_params({
+hparams = {
     'model': args.model,
-    'learning-rate': args.learning_rate,
-    'batch-size': args.batch_size,
+    'batch_size': args.batch_size,
     'epochs': args.epochs,
-})
+    'lr': args.lr,
+    'crop_size': 'x'.join(map(str, args.crop_size)),
+    'scaling': '-'.join(map(str, args.scaling)),
+    'loss_fn': args.loss_fn,
+}
 
 device = torch.device(args.device)
 
-# logging.basicConfig(level=logging.DEBUG)
-logging.info(
-    f"Starting with arguments: model={args.model}, batch-size={args.batch_size},"
-    f" epochs={args.epochs}, learning-rate={args.learning_rate}, device={args.device}"
-)
 
-# data-augmentation
-train_augmentations = Compose([
-    RandomScale((0.75, 1.5)),
-    RandomCrop(512, 512),
-    HorizontalFlip(),
-    RandomBrightnessContrast(brightness_limit=0.1, contrast_limit=0.1),
-    # RandomGamma(),
-    Normalize(),
-    ToTensorV2(),
-])
+def get_augmentation_fns(crop_size, scaling):
+    from albumentations import (
+        Compose, Normalize,
+        RandomResizedCrop,
+        HorizontalFlip,
+        Rotate,
+        Resize,
+        RandomBrightnessContrast,
+        RandomBrightness,
+        RandomCrop,
+        RandomScale,
+        RandomSizedCrop,
+        RandomGamma,
+    )
+    from albumentations.pytorch import ToTensorV2
 
-val_augmentations = Compose([
-    Resize(512, 1024),
-    Normalize(),
-    ToTensorV2(),
-])
+    train_augmentations = Compose([
+        RandomScale(scaling),
+        RandomCrop(crop_size[1], crop_size[0]),
+        HorizontalFlip(),
+        Normalize(),
+        ToTensorV2(),
+    ])
 
+    val_augmentations = Compose([
+        Normalize(),
+        ToTensorV2(),
+    ])
 
-# preparing dataset
-train_ds = DeepDriveDataset('/home/bml/datasets/bdd100k/seg',
-                            split='train', transforms=train_augmentations)
-val_ds = DeepDriveDataset('/home/bml/datasets/bdd100k/seg',
-                          split='val', transforms=val_augmentations)
-# data loading
-train_loader = DataLoader(train_ds, num_workers=4, batch_size=args.batch_size)
-val_loader = DataLoader(val_ds, num_workers=4, batch_size=args.batch_size)
-
-
-criterion = torch.nn.CrossEntropyLoss(ignore_index=255)
-model = ENet(3, 19)
+    return train_augmentations, val_augmentations
 
 
-max_epochs = int(args.epochs)
+def get_dataset(train_augmentations, val_augmentations):
+    from torch_semantic_segmentation.data import CityScapesDataset
 
-optimizer = torch.optim.SGD(
-    model.parameters(), lr=1e-1, momentum=0.9, weight_decay=1e-5)
+    train_ds = CityScapesDataset(
+        '/home/bml/datasets/cities-scapes',
+        split='train', transforms=train_augmentations)
 
+    train_eval_ds = CityScapesDataset(
+        '/home/bml/datasets/cities-scapes',
+        split='train', transforms=val_augmentations)
 
-lr_scheduler = OneCycleLR(
-    optimizer=optimizer,
-    max_lr=1e-3,
-    steps_per_epoch=len(train_ds),
-    epochs=max_epochs,
-)
+    val_eval_ds = CityScapesDataset(
+        '/home/bml/datasets/cities-scapes',
+        split='val', transforms=val_augmentations)
 
-
-trainer = create_supervised_trainer(model, optimizer, criterion, device=device)
-
-RunningAverage(output_transform=lambda x: x).attach(trainer, 'loss')
-
-ProgressBar(persist=True).attach(
-    trainer, ['loss'])
-
-scheduler = LRScheduler(lr_scheduler)
-trainer.add_event_handler(Events.ITERATION_STARTED, scheduler)
+    return train_ds, train_eval_ds, val_eval_ds
 
 
-metrics = {
-    'loss': Loss(criterion),
-    'accuracy': Accuracy(),
-    'mIOU': mIoU(ConfusionMatrix(num_classes=19)),
+def get_loss_fn(name='cross-entropy'):
+    from torch_semantic_segmentation.losses import ohem_loss, soft_dice_loss
+
+    if name == 'cross-entropy':
+        return nn.CrossEntropyLoss(ignore_index=255)
+    elif name == 'ohem':
+        return partial(ohem_loss, ignore_index=255)
+    elif name == 'dice':
+        return partial(soft_dice_loss, num_classes=19, ignore_index=255)
+    elif name == 'balanced-cross-entropy':
+        counts = torch.load('city-weights.pth')[:19]
+        weight = 1. / torch.log(1.02 + counts)
+        return nn.CrossEntropyLoss(ignore_index=255, weight=weight)
+    else:
+        raise ValueError('unknown loss_fn')
+
+
+def get_model(name='fastscnn'):
+    from torch_semantic_segmentation.models import FastSCNN, ENet
+
+    if name == 'fastscnn':
+        return FastSCNN
+    elif name == 'enet':
+        return ENet
+    else:
+        raise ValueError('unknown model')
+
+## BEGIN TRAINING ##
+
+
+model = get_model(hparams['model'])(3, 19)
+model = model.to(device)
+
+# optimizer = torch.optim.SGD(
+#     model.parameters(), lr=hparams['lr'], weight_decay=1e-5, momentum=0.9)
+
+optimizer = torch.optim.AdamW(
+    model.parameters(), lr=args.lr, weight_decay=1e-4)
+# scheduler = torch.optim.lr_scheduler.MultiStepLR(
+#     optimizer, [50, 100, 150])
+
+loss_fn = get_loss_fn(hparams['loss_fn'])
+if isinstance(loss_fn, nn.Module):
+    loss_fn = loss_fn.to(device)
+
+
+def criterion(inputs, targets):
+    return loss_fn(inputs, targets)
+
+
+def update_fn(batch):
+    inputs, targets = batch
+    optimizer.zero_grad()
+    outputs = model(inputs)
+    loss = criterion(outputs, targets)
+    loss.backward()
+    optimizer.step()
+    return loss.item()
+
+
+state = {
+    'epoch': 0,
+    'iteration': 0,
+    'loss': RunningMetric(lambda x: x),
 }
 
 
-evaluator = create_supervised_evaluator(model, metrics=metrics, device=device)
-ProgressBar(persist=False).attach(evaluator)
+# FOR MLFLOW LOGGING
+start_run()
+
+log_params(hparams)
 
 
-checkpoints_dir = tempfile.mkdtemp()
+def evaluate_fn(dataloader, metric_fns):
+    metrics = {name: AveragedMetric(metric_fn)
+               for name, metric_fn in metric_fns.items()}
+
+    for inputs, targets in dataloader:
+        inputs = inputs.to(device)
+        targets = targets.to(device)
+
+        with torch.no_grad():
+            outputs = model(inputs)
+
+        for metric in metrics:
+            metrics[metric].update(outputs, targets)
+    return metrics
 
 
-@trainer.on(Events.EPOCH_COMPLETED)
-def validate(trainer):
-    state = evaluator.run(train_loader)
-    logging.info(f"train metrics: {state.metrics}")
-    log_metrics({
-        'train/loss': state.metrics['loss'],
-        'train/acc': state.metrics['accuracy'],
-        'train/mIOU': state.metrics['mIOU'],
-    })
+train_aug, val_aug = get_augmentation_fns(args.crop_size, args.scaling)
 
-    state = evaluator.run(val_loader)
-    logging.info(f"evaluation metrics: {state.metrics}")
-    log_metrics({
-        'val/loss': state.metrics['loss'],
-        'val/acc': state.metrics['accuracy'],
-        'val/mIOU': state.metrics['mIOU'],
-    })
+train_ds, train_eval_ds, val_eval_ds = get_dataset(
+    train_aug, val_aug)
 
-    epoch = trainer.state.epoch
-    mIOU = state.metrics['mIOU']
-    checkpoint_file = os.path.join(
-        checkpoints_dir, f'{args.model}-{epoch:03d}-{mIOU}.pth')
-    torch.save(model.state_dict(), checkpoint_file)
+train_loader = DataLoader(train_ds, num_workers=8,
+                          batch_size=hparams['batch_size'], shuffle=True)
+train_eval_loader = DataLoader(train_eval_ds, num_workers=8, batch_size=5)
+val_eval_loader = DataLoader(val_eval_ds, num_workers=8, batch_size=5)
 
-    logging.info(f"saving model to {checkpoint_file}")
+scheduler = torch.optim.lr_scheduler.OneCycleLR(
+    optimizer,
+    max_lr=hparams['lr'],
+    epochs=hparams['epochs'], steps_per_epoch=len(train_loader)
+)
 
+metric_fns = {
+    'accuracy': partial(accuracy, ignore_index=255),
+    'cm': partial(confusion_matrix, num_classes=19),
+    'loss': loss_fn,
+}
 
-trainer.run(train_loader, max_epochs=args.epochs)
+for epoch in range(hparams['epochs']):
+    state['epoch'] = epoch
 
-log_artifact(checkpoints_dir, 'checkpoints')
+    # first, train
+    model.train()
+    for inputs, outputs in train_loader:
+        inputs = inputs.to(device)
+        outputs = outputs.to(device)
+
+        loss = update_fn((inputs, outputs))
+
+        state['loss'].update(loss)
+        state['iteration'] += 1
+
+        if state['iteration'] % 20 == 0:
+            logging.info("Epoch {:03d}/{:03d} Iteration {:03d}: loss = {:03f}"
+                         .format(epoch, hparams['epochs'], state['iteration'], state['loss'].compute()))
+
+            log_metrics({
+                'train/loss': loss,
+                'train/lr': optimizer.param_groups[0]['lr'],
+                # 'train/mom': optimizer.param_groups[0]['momentum']
+            }, step=state['iteration'])
+
+        scheduler.step()
+
+    if epoch % 5 == 0:
+        metrics = evaluate_fn(val_eval_loader, metric_fns)
+        logging.info("Evaluating for val (epoch {:03d}/{:03d}): loss = {}, miou = {}"
+                     .format(epoch, hparams['epochs'], metrics['loss'].compute(), miou(metrics['cm'].compute())))
+        log_metrics({
+            'val/loss': metrics['loss'].compute().item(),
+            'val/miou': miou(metrics['cm'].compute()).item(),
+            'val/acc': metrics['accuracy'].compute().item(),
+        }, step=state['iteration'])
+
+        torch.save(model.state_dict(),
+                   f'checkpoints/enet-cityscapes-{epoch:03d}.pth')
+
+end_run()

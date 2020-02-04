@@ -133,3 +133,5 @@ dmypy.json
 
 # add mlflow mlruns directory
 mlruns
+
+checkpoints*
