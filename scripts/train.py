@@ -126,7 +126,7 @@ def get_loss_fn(name='cross-entropy'):
     elif name == 'balanced-cross-entropy':
         counts = torch.load('city-weights.pth')[:19]
         weight = 1. / torch.log(1.02 + counts)
-        return nn.CrossEntropyLoss(ignore_index=255, weight=weight)
+        return nn.CrossEntropyLoss(ignore_index=255, weight=weight, reduction='mean')
     else:
         raise ValueError('unknown loss_fn')
 
@@ -150,8 +150,8 @@ model = model.to(device)
 # optimizer = torch.optim.SGD(
 #     model.parameters(), lr=hparams['lr'], weight_decay=1e-5, momentum=0.9)
 
-optimizer = torch.optim.AdamW(
-    model.parameters(), lr=args.lr, weight_decay=1e-4)
+optimizer = torch.optim.SGD(
+    model.parameters(), lr=args.lr, weight_decay=1e-4, momentum=0.9, nesterov=True)
 # scheduler = torch.optim.lr_scheduler.MultiStepLR(
 #     optimizer, [50, 100, 150])
 
@@ -160,8 +160,7 @@ if isinstance(loss_fn, nn.Module):
     loss_fn = loss_fn.to(device)
 
 
-def criterion(inputs, targets):
-    return loss_fn(inputs, targets)
+criterion = loss_fn
 
 
 def update_fn(batch):
@@ -216,27 +215,46 @@ val_eval_loader = DataLoader(val_eval_ds, num_workers=8, batch_size=5)
 scheduler = torch.optim.lr_scheduler.OneCycleLR(
     optimizer,
     max_lr=hparams['lr'],
-    epochs=hparams['epochs'], steps_per_epoch=len(train_loader)
+    epochs=hparams['epochs'],
+    steps_per_epoch=len(train_loader)
 )
 
 metric_fns = {
     'accuracy': partial(accuracy, ignore_index=255),
     'cm': partial(confusion_matrix, num_classes=19),
-    'loss': loss_fn,
+    'loss': (lambda x, y: loss_fn(x, y).mean()),
 }
+
+beta_dist = torch.distributions.Beta(0.1, 0.1)
 
 for epoch in range(hparams['epochs']):
     state['epoch'] = epoch
 
     # first, train
     model.train()
-    for inputs, outputs in train_loader:
+    for inputs, targets in train_loader:
         inputs = inputs.to(device)
-        outputs = outputs.to(device)
+        targets = targets.to(device)
 
-        loss = update_fn((inputs, outputs))
+        # MIXUP PART
+        # get the beta
+        lamb = beta_dist.sample().to(device)
+        perm = torch.randperm(inputs.shape[0]).to(device)
+        inputs1 = inputs
+        inputs2 = inputs[perm]
+        targets1 = targets
+        targets2 = targets[perm]
 
-        state['loss'].update(loss)
+        inputs = (lamb * inputs1 + (1 - lamb) * inputs2)
+
+        optimizer.zero_grad()
+        outputs = model(inputs)
+        loss = (lamb * criterion(outputs, targets1) +
+                (1 - lamb) * criterion(outputs, targets2))
+        loss.backward()
+        optimizer.step()
+
+        state['loss'].update(loss.item())
         state['iteration'] += 1
 
         if state['iteration'] % 20 == 0:
@@ -244,7 +262,7 @@ for epoch in range(hparams['epochs']):
                          .format(epoch, hparams['epochs'], state['iteration'], state['loss'].compute()))
 
             log_metrics({
-                'train/loss': loss,
+                'train/loss': loss.item(),
                 'train/lr': optimizer.param_groups[0]['lr'],
                 # 'train/mom': optimizer.param_groups[0]['momentum']
             }, step=state['iteration'])
@@ -262,6 +280,6 @@ for epoch in range(hparams['epochs']):
         }, step=state['iteration'])
 
         torch.save(model.state_dict(),
-                   f'checkpoints/enet-cityscapes-{epoch:03d}.pth')
+                   f'checkpoints-enet-mixup/enet-cityscapes-{epoch:03d}.pth')
 
 end_run()
