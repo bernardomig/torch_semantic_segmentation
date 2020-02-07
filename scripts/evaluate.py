@@ -41,13 +41,13 @@ def create_evaluator(model, loss_fn, device):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--state-dict', type=str,
+    parser.add_argument('--state_dict', type=str,
                         help='the state dict to load the weights from',
                         required=True)
     args = parser.parse_args()
 
     val_tfms = albu.Compose([
-        albu.Resize(256, 512),
+        albu.Resize(1024, 2048),
         albu.Normalize(),
         ToTensor(),
     ])
@@ -66,7 +66,7 @@ if __name__ == "__main__":
             ds, batch_size=2, num_workers=8, drop_last=False)
         for ds in val_ds]
 
-    device = torch.device('cuda')
+    device = torch.device('cuda:3')
 
     model = ENet(3, 19)
     model.load_state_dict(torch.load(args.state_dict, map_location='cpu'))

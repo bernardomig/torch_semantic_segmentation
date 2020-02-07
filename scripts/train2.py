@@ -1,5 +1,5 @@
 from ignite.engine import Engine, Events
-from ignite.metrics import Loss, RunningAverage, ConfusionMatrix, Average, mIoU
+from ignite.metrics import Loss, RunningAverage, ConfusionMatrix, Average, mIoU, DiceCoefficient
 from ignite.handlers import Checkpoint, DiskSaver, global_step_from_engine
 from torch_semantic_segmentation.losses import soft_dice_loss
 from functools import partial
@@ -315,11 +315,11 @@ if __name__ == "__main__":
     ]
 
     train_loader = torch.utils.data.DataLoader(
-        train_ds, batch_size=config['batch-size'], num_workers=16, drop_last=True, shuffle=True, pin_memory=True)
+        train_ds, batch_size=config['batch-size'], num_workers=4, drop_last=True, shuffle=True, pin_memory=True)
 
     val_loaders = [
         torch.utils.data.DataLoader(
-            ds, batch_size=8, num_workers=8, drop_last=False)
+            ds, batch_size=8, num_workers=4, drop_last=False)
         for ds in val_ds]
 
     # configuring the model

@@ -32,6 +32,9 @@ CLASS_FREQ = array([
 
 
 class CityScapesDataset(Dataset):
+    NUM_CLASSES = 19
+    IGNORE_INDEX = 255
+    CLASS_FREQ = CLASS_FREQ
 
     def __init__(self, root_dir, split='train', transforms=None):
         cities = CITIES[split]
