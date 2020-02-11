@@ -97,7 +97,7 @@ def create_tfms(crop_size, scaling, validation_size):
     return train_tfms, val_tfms
 
 
-def create_trainer(model, optimizer, loss_fn, device, use_f16=False):
+def create_trainer(model, optimizer, loss_fn, device, use_f16=False, use_mixup=False, mixup_alpha=0.1):
     def prepare_batch(batch):
         x, y = batch
         x = x.to(device)
@@ -108,8 +108,28 @@ def create_trainer(model, optimizer, loss_fn, device, use_f16=False):
         model.train()
         optimizer.zero_grad()
         x, y = prepare_batch(batch)
+
+        if use_mixup:
+            batch_size = x.shape[0]
+            beta_dist = torch.distributions.Beta(mixup_alpha, mixup_alpha)
+            betas = beta_dist.sample((batch_size, 1, 1, 1))
+
+            # shuffle x
+            ind = torch.randperm(batch_size)
+            x_ = x[ind]
+
+            x = (betas * x) + ((1 - betas) * x_)
+
         y_pred = model(x)
-        loss = loss_fn(y_pred, y)
+
+        if use_mixup:
+            # loss = loss_fn(y_pred, y)
+            loss = betas * loss_fn(y_pred, y) + \
+                (1 - betas) * loss_fn(y_pred, y[ind])
+            loss = loss.mean()
+        else:
+            loss = loss_fn(y_pred, y)
+
         if use_f16:
             with amp.scale_loss(loss, optimizer) as scaled_loss:
                 scaled_loss.backward()
