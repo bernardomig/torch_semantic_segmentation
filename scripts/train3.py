@@ -15,6 +15,8 @@ from ignite.handlers import Checkpoint, DiskSaver, global_step_from_engine
 
 from apex import amp
 
+import wandb
+
 
 logging.basicConfig(level=logging.INFO)
 
@@ -59,8 +61,20 @@ def load_optimizer(name, **kwargs):
 
 
 def load_loss_fn(name, class_freq, ignore_index, **kwargs):
+    from torch_semantic_segmentation.losses import (
+        DiceLoss, OHEMLoss, FocalLoss, LovaszSoftmaxLoss)
+    # from kornia.losses import DiceLoss
+
     if name == 'cross_entropy':
         return partial(torch.nn.CrossEntropyLoss, ignore_index=ignore_index)
+    elif name == 'ohem':
+        return partial(OHEMLoss, ignore_index=ignore_index, numel_frac=0.05)
+    elif name == 'dice_loss':
+        return partial(DiceLoss, num_classes=19, ignore_index=255)
+    elif name == 'focal_loss':
+        return partial(FocalLoss, alpha=1.0, gamma=2.0, ignore_index=ignore_index)
+    elif name == 'lovasz_softmax_loss':
+        return partial(LovaszSoftmaxLoss, num_classes=19, ignore_index=255)
     else:
         raise ValueError("no loss fn registered as {}".format(name))
 
@@ -105,7 +119,7 @@ def create_trainer(model, optimizer, loss_fn, device, use_f16=False):
         return loss.item()
 
     trainer = Engine(update_fn)
-    RunningAverage(output_transform=lambda x: x) \
+    RunningAverage(output_transform=lambda x: x, epoch_bound=False) \
         .attach(trainer, 'loss')
 
     @trainer.on(Events.ITERATION_COMPLETED)
@@ -148,40 +162,54 @@ def create_evaluator(model, loss_fn, num_classes, device):
     return evaluator
 
 
-MODEL = 'enet'
-OPTIMIZER = 'SGDNesterov'
-LOSS = 'cross_entropy'
-LR = 1e-2
-WEIGHT_DECAY = 1e-4
+config = {
+    'dataset': 'cityscapes',
+    'model': 'enet',
+    'optimizer': 'SGDNesterov',
+    'loss': 'focal_loss',
+    # 'loss.numel_frac': 0.05,
+    'loss.gamma': 2.0,
+    'loss.alpha': 1.0,
 
-EPOCHS = 200
-BATCH_SIZE = 32
+    'lr': 1e-2,
+    'weight_decay': 1e-4,
+
+    'scheduler': 'OneCycle',
+
+    'epochs': 300,
+    'batch_size': 16,
+    'use_f16': False,
+
+    'crop_size': [512, 512],
+    'scaling_factors': [0.50, 1.5],
+}
+
+DEVICE_ID = 3
 VAL_BATCH_SIZE = 4
-
-USE_F16 = True
-
-NUM_WORKERS = 6
+USE_F16 = False
+NUM_WORKERS = 8
 NUM_WORKERS_VAL = 6
-
-CROP_SIZE = [512, 512]
-SCALING_FACTORS = [0.25, 1.0]
-
 DATASET_DIR = '/home/bml/datasets/cities-scapes'
 EVALUATE_FREQ = 5
 
 
-Model = load_model(MODEL)
-Dataset, ds_config = load_dataset('cityscapes')
+wandb.init(project='semantic-segmentation', config=config)
+
+torch.cuda.set_device(DEVICE_ID)
+device = torch.device('cuda', DEVICE_ID)
+
+Model = load_model(config['model'])
+Dataset, ds_config = load_dataset(config['dataset'])
 num_classes = ds_config['num_classes']
 
 LossFn = load_loss_fn(
-    LOSS, ds_config['class_freq'], ignore_index=ds_config['ignore_index'])
+    config['loss'], ds_config['class_freq'], ignore_index=ds_config['ignore_index'])
 
-Optimizer = load_optimizer(OPTIMIZER, momentum=0.85)
+Optimizer = load_optimizer(config['optimizer'], momentum=0.85)
 
 train_tfms, val_tfms = create_tfms(
-    crop_size=CROP_SIZE,
-    scaling=SCALING_FACTORS,
+    crop_size=config['crop_size'],
+    scaling=config['scaling_factors'],
     validation_size=ds_config['val_size'])
 
 train_ds = Dataset(
@@ -193,31 +221,35 @@ val_ds = OrderedDict([
 
 
 train_loader = DataLoader(
-    train_ds, batch_size=BATCH_SIZE, num_workers=NUM_WORKERS, pin_memory=True)
+    train_ds, batch_size=config['batch_size'], num_workers=NUM_WORKERS, pin_memory=True)
 val_loaders = OrderedDict([
     (name, DataLoader(ds, batch_size=VAL_BATCH_SIZE, num_workers=NUM_WORKERS_VAL))
     for name, ds in val_ds.items()
 ])
 
 
-device = torch.device('cuda')
 model = Model(in_channels=ds_config['in_channels'],
               out_channels=num_classes)
+# model.load_state_dict(torch.load(
+#     'torch_segmentation_models/different_loss_fns/enet_citys_loss=ohem_mIOU=0.4692pth', map_location='cpu'))
 model = model.to(device)
-optimizer = Optimizer(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
+optimizer = Optimizer(model.parameters(),
+                      lr=config['lr'], weight_decay=config['weight_decay'])
 
+wandb.watch(model)
 
-if USE_F16:
+if config['use_f16']:
     model, optimizer = amp.initialize(
         model, optimizer, opt_level="O2", keep_batchnorm_fp32=True)
 
 loss_fn = LossFn()
 
 scheduler = torch.optim.lr_scheduler.OneCycleLR(
-    optimizer, max_lr=LR, epochs=200, steps_per_epoch=len(train_loader))
+    optimizer, max_lr=config['lr'], epochs=config['epochs'], steps_per_epoch=len(train_loader))
 
 
-trainer = create_trainer(model, optimizer, loss_fn, device, use_f16=USE_F16)
+trainer = create_trainer(model, optimizer, loss_fn,
+                         device, use_f16=config['use_f16'])
 
 
 @trainer.on(Events.ITERATION_COMPLETED)
@@ -225,10 +257,35 @@ def step_scheduler(_trainer):
     scheduler.step()
 
 
+@trainer.on(Events.ITERATION_COMPLETED(every=EVALUATE_FREQ))
+def log_training_metrics(engine):
+    current_step = engine.state.iteration
+    metrics = engine.state.metrics
+    wandb.log({
+        'training/{}'.format(metric): value
+        for metric, value in metrics.items()
+    }, step=current_step)
+
+
 train_evaluator = create_evaluator(
     model, loss_fn, num_classes=num_classes, device=device)
 val_evaluator = create_evaluator(
     model, loss_fn, num_classes=num_classes, device=device)
+
+
+def log_metrics(evaluator, name):
+    current_step = trainer.state.iteration
+    metrics = evaluator.state.metrics
+    wandb.log({
+        '{}/{}'.format(name, metric): value
+        for metric, value in metrics.items()
+    }, step=current_step)
+
+
+train_evaluator.add_event_handler(
+    Events.COMPLETED, partial(log_metrics, name='train'))
+val_evaluator.add_event_handler(
+    Events.COMPLETED, partial(log_metrics, name='val'))
 
 
 @trainer.on(Events.EPOCH_COMPLETED(every=EVALUATE_FREQ))
@@ -249,7 +306,7 @@ def evaluate(engine):
     info("finished evaluation")
 
 
-checkpoints_dir = tempfile.mkdtemp(prefix='checkpoints')
+checkpoints_dir = os.path.join(wandb.run.dir, 'checkpoints')
 info("logging checkpoints to {}".format(checkpoints_dir))
 checkpointer = Checkpoint(
     to_save={'model': model},
@@ -261,4 +318,4 @@ checkpointer = Checkpoint(
     global_step_transform=global_step_from_engine(trainer))
 val_evaluator.add_event_handler(Events.COMPLETED, checkpointer)
 
-trainer.run(train_loader, max_epochs=EPOCHS)
+trainer.run(train_loader, max_epochs=config['epochs'])

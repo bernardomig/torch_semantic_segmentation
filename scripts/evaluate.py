@@ -2,8 +2,8 @@ import torch
 from torch.utils.data import DataLoader
 
 from ignite.engine import Engine, Events, create_supervised_evaluator
-from ignite.metrics import Loss, RunningAverage, ConfusionMatrix, Average, mIoU
-from torch_semantic_segmentation.metrics import accuracy
+from ignite.metrics import Loss
+from ignite.metrics.confusion_matrix import ConfusionMatrix, cmAccuracy, mIoU, IoU
 
 from torch_semantic_segmentation.models import ENet
 from torch_semantic_segmentation.data import CityScapesDataset
@@ -32,9 +32,9 @@ def create_evaluator(model, loss_fn, device):
 
     evaluator = Engine(validate_fn)
     Loss(loss_fn).attach(evaluator, 'loss')
-    mIoU(ConfusionMatrix(num_classes=19)).attach(evaluator, 'mIOU')
-    Average(output_transform=lambda x: accuracy(x[0], x[1], ignore_index=255)) \
-        .attach(evaluator, 'accuracy')
+    IoU(ConfusionMatrix(num_classes=19)).attach(evaluator, 'IoU')
+    mIoU(ConfusionMatrix(num_classes=19)).attach(evaluator, 'mIoU')
+    cmAccuracy(ConfusionMatrix(num_classes=19)).attach(evaluator, 'accuracy')
 
     return evaluator
 
@@ -63,7 +63,7 @@ if __name__ == "__main__":
 
     val_loaders = [
         torch.utils.data.DataLoader(
-            ds, batch_size=2, num_workers=8, drop_last=False)
+            ds, batch_size=4, num_workers=8, drop_last=False)
         for ds in val_ds]
 
     device = torch.device('cuda:3')
@@ -79,7 +79,11 @@ if __name__ == "__main__":
 
     evaluator = create_evaluator(model, loss_fn, device)
 
+    from pprint import pprint
+
     state = evaluator.run(tqdm(val_loaders[0]))
-    print('train metrics: ', state.metrics)
+    print('train metrics: ')
+    pprint(state.metrics)
     state = evaluator.run(tqdm(val_loaders[1]))
-    print('val metrics: ', state.metrics)
+    print('val metrics: ')
+    pprint(state.metrics)

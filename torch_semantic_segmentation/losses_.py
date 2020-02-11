@@ -15,7 +15,8 @@ def focal_loss(input, target, gamma, ignore_index=None):
     scores = F.softmax(input, dim=1)
     factor = torch.pow(1. - scores, gamma)
     log_score = factor * F.log_softmax(input, dim=1)
-    return F.nll_loss(log_score, target, ignore_index=ignore_index)
+    return F.nll_loss(log_score, target,
+                      ignore_index=ignore_index)
 
 
 class FocalLoss(nn.Module):
@@ -31,8 +32,9 @@ class FocalLoss(nn.Module):
                           ignore_index=self.ignore_index)
 
 
-def ohem_loss(input, target, ignore_index=None, thresh_loss=-log(0.7), min_numel_frac=0.16):
-    loss = F.cross_entropy(input, target, ignore_index=255, reduction='none')
+def ohem_loss(input, target, ignore_index=None, thresh_loss=-log(0.7), min_numel_frac=0.01):
+    loss = F.cross_entropy(
+        input, target, ignore_index=ignore_index, reduction='none')
     loss = loss.flatten()
     n = int(loss.numel() * min_numel_frac)
 
@@ -46,7 +48,7 @@ def ohem_loss(input, target, ignore_index=None, thresh_loss=-log(0.7), min_numel
 
 class OHEMLoss(nn.Module):
 
-    def __init__(self, ignore_index=None, thresh_loss=-log(0.7), min_numel_frac=0.16):
+    def __init__(self, ignore_index=None, thresh_loss=-log(0.7), min_numel_frac=0.01):
         super().__init__()
 
         self.ignore_index = ignore_index
@@ -60,7 +62,7 @@ class OHEMLoss(nn.Module):
                          min_numel_frac=self.min_numel_frac)
 
 
-def soft_dice_loss(inputs, target, num_classes, ignore_index=None):
+def soft_dice_loss(inputs, target, num_classes, smooth=1.0, ignore_index=None):
     logits = torch.softmax(inputs, dim=1).flatten(2)
     target = target.flatten(1)
 
@@ -74,21 +76,57 @@ def soft_dice_loss(inputs, target, num_classes, ignore_index=None):
     intersection = torch.sum(logits * target, dim=0)
     union = torch.sum(logits, dim=0) + torch.sum(target, dim=0)
 
-    return 1. - (2. * intersection / union).mean()
+    return 1. - (((2. * intersection + smooth) / (union + smooth))).mean()
 
 
 class SoftDiceLoss(nn.Module):
 
-    def __init__(self, num_classes, ignore_index=None):
+    def __init__(self, num_classes, smooth=1.0, ignore_index=None):
         super().__init__()
 
         self.num_classes = num_classes
         self.ignore_index = ignore_index
+        self.smooth = smooth
 
     def forward(self, input, target):
         return soft_dice_loss(input, target,
                               num_classes=self.num_classes,
+                              smooth=self.smooth,
                               ignore_index=self.ignore_index)
+
+
+def ln_dice_loss(inputs, targets, num_classes, smooth=1.0, ignore_index=None):
+    logits = torch.softmax(inputs, dim=1).flatten(2)
+    targets = targets.flatten(1)
+
+    mask = targets != ignore_index & targets >= 0 & targets < num_classes
+    logits = logits.permute(0, 2, 1)[mask]
+    targets = targets[mask]
+
+    targets = F.one_hot(targets, num_classes=num_classes).float()
+
+    intersection = torch.sum(logits * targets, dim=0)
+    union = torch.sum(logits, dim=0) + torch.sum(targets, dim=0)
+
+    dice = ((2. * intersection + smooth) / (union + smooth))
+
+    return (-1.0 * torch.log(dice)).mean()
+
+
+class LnDiceLoss(nn.Module):
+
+    def __init__(self, num_classes, smooth=1.0, ignore_index=None):
+        super().__init__()
+
+        self.num_classes = num_classes
+        self.ignore_index = ignore_index
+        self.smooth = smooth
+
+    def forward(self, inputs, targets):
+        return ln_dice_loss(inputs, targets,
+                            num_classes=self.num_classes,
+                            smooth=self.smooth,
+                            ignore_index=self.ignore_index)
 
 
 def lovasz_grad(gt_sorted):
