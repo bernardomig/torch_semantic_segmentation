@@ -67,6 +67,12 @@ def load_loss_fn(name, class_freq, ignore_index, **kwargs):
 
     if name == 'cross_entropy':
         return partial(torch.nn.CrossEntropyLoss, ignore_index=ignore_index)
+    if name == 'balanced_cross_entropy':
+        counts = torch.from_numpy(class_freq.astype('f4'))
+        weight = 1. / torch.log(1.02 + counts)
+        return partial(torch.nn.CrossEntropyLoss,
+                       ignore_index=ignore_index,
+                       weight=weight)
     elif name == 'ohem':
         return partial(OHEMLoss, ignore_index=ignore_index, numel_frac=0.05)
     elif name == 'dice_loss':
@@ -79,13 +85,23 @@ def load_loss_fn(name, class_freq, ignore_index, **kwargs):
         raise ValueError("no loss fn registered as {}".format(name))
 
 
-def create_tfms(crop_size, scaling, validation_size):
+def create_tfms(crop_size, scaling, validation_size, hard=False):
     import albumentations as albu
     from albumentations.pytorch import ToTensorV2 as ToTensor
+    hard_tfms = [
+        albu.Rotate(limit=5),
+        albu.GaussNoise(var_limit=(10, 50), p=0.2),
+        albu.OneOf([
+            albu.RandomBrightnessContrast(),
+            albu.HueSaturationValue(),
+        ])
+    ]
+
     train_tfms = albu.Compose([
         albu.RandomScale(scaling),
         albu.RandomCrop(crop_size[1], crop_size[0]),
         albu.HorizontalFlip(),
+        *hard_tfms,
         albu.Normalize(),
         ToTensor(),
     ])
@@ -113,6 +129,7 @@ def create_trainer(model, optimizer, loss_fn, device, use_f16=False, use_mixup=F
             batch_size = x.shape[0]
             beta_dist = torch.distributions.Beta(mixup_alpha, mixup_alpha)
             betas = beta_dist.sample((batch_size, 1, 1, 1))
+            betas = betas.to(device)
 
             # shuffle x
             ind = torch.randperm(batch_size)
@@ -123,10 +140,18 @@ def create_trainer(model, optimizer, loss_fn, device, use_f16=False, use_mixup=F
         y_pred = model(x)
 
         if use_mixup:
+            y_ = y[ind]
+            betas = betas.reshape(-1, 1, 1)
+            loss1 = betas * loss_fn(y_pred, y)
+            loss2 = (1. - betas) * loss_fn(y_pred, y_)
+            loss = loss1[y != 255].mean() + loss2[y_ != 255].mean()
+            # mask = (y != 255) | (y_ != 255)
+            # mask = y != 255
             # loss = loss_fn(y_pred, y)
-            loss = betas * loss_fn(y_pred, y) + \
-                (1 - betas) * loss_fn(y_pred, y[ind])
-            loss = loss.mean()
+            # loss = loss[mask]
+            # print("loss.shape", loss.shape)
+            # loss = loss.mean()
+            # print("loss =", loss)
         else:
             loss = loss_fn(y_pred, y)
 
@@ -186,25 +211,27 @@ config = {
     'dataset': 'cityscapes',
     'model': 'enet',
     'optimizer': 'SGDNesterov',
-    'loss': 'focal_loss',
+    'loss': 'balanced_cross_entropy',
     # 'loss.numel_frac': 0.05,
-    'loss.gamma': 2.0,
-    'loss.alpha': 1.0,
+    # 'loss.gamma': 2.0,
+    # 'loss.alpha': 1.0,
+    'hard_tfms': True,
 
-    'lr': 1e-2,
+    'lr': 2e-2,
     'weight_decay': 1e-4,
 
     'scheduler': 'OneCycle',
 
-    'epochs': 300,
-    'batch_size': 16,
-    'use_f16': False,
+    'epochs': 400,
+    'batch_size': 32,
+    'use_f16': True,
+    'use_mixup': False,
 
     'crop_size': [512, 512],
-    'scaling_factors': [0.50, 1.5],
+    'scaling_factors': [0.50, 2],
 }
 
-DEVICE_ID = 3
+DEVICE_ID = 2
 VAL_BATCH_SIZE = 4
 USE_F16 = False
 NUM_WORKERS = 8
@@ -230,7 +257,8 @@ Optimizer = load_optimizer(config['optimizer'], momentum=0.85)
 train_tfms, val_tfms = create_tfms(
     crop_size=config['crop_size'],
     scaling=config['scaling_factors'],
-    validation_size=ds_config['val_size'])
+    validation_size=ds_config['val_size'],
+    hard=config['hard_tfms'])
 
 train_ds = Dataset(
     DATASET_DIR, split='train', transforms=train_tfms)
@@ -251,10 +279,11 @@ val_loaders = OrderedDict([
 model = Model(in_channels=ds_config['in_channels'],
               out_channels=num_classes)
 # model.load_state_dict(torch.load(
-#     'torch_segmentation_models/different_loss_fns/enet_citys_loss=ohem_mIOU=0.4692pth', map_location='cpu'))
+#     'model_weights/different_loss_fns/enet_citys_loss=ohem_mIOU=0.4692pth', map_location='cpu'))
 model = model.to(device)
 optimizer = Optimizer(model.parameters(),
-                      lr=config['lr'], weight_decay=config['weight_decay'])
+                      lr=config['lr'],
+                      weight_decay=config['weight_decay'])
 
 wandb.watch(model)
 
@@ -263,13 +292,19 @@ if config['use_f16']:
         model, optimizer, opt_level="O2", keep_batchnorm_fp32=True)
 
 loss_fn = LossFn()
+loss_fn = loss_fn.to(device)
+
+if config['use_mixup']:
+    loss_fn.reduction = 'none'
 
 scheduler = torch.optim.lr_scheduler.OneCycleLR(
     optimizer, max_lr=config['lr'], epochs=config['epochs'], steps_per_epoch=len(train_loader))
 
 
 trainer = create_trainer(model, optimizer, loss_fn,
-                         device, use_f16=config['use_f16'])
+                         device,
+                         use_f16=config['use_f16'],
+                         use_mixup=config['use_mixup'])
 
 
 @trainer.on(Events.ITERATION_COMPLETED)
@@ -288,9 +323,9 @@ def log_training_metrics(engine):
 
 
 train_evaluator = create_evaluator(
-    model, loss_fn, num_classes=num_classes, device=device)
+    model, LossFn().to(device), num_classes=num_classes, device=device)
 val_evaluator = create_evaluator(
-    model, loss_fn, num_classes=num_classes, device=device)
+    model, LossFn().to(device), num_classes=num_classes, device=device)
 
 
 def log_metrics(evaluator, name):
