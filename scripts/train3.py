@@ -211,39 +211,39 @@ config = {
     'dataset': 'cityscapes',
     'model': 'enet',
     'optimizer': 'SGDNesterov',
-    'loss': 'balanced_cross_entropy',
+    'loss': 'cross_entropy',
     # 'loss.numel_frac': 0.05,
     # 'loss.gamma': 2.0,
     # 'loss.alpha': 1.0,
-    'hard_tfms': True,
+    'hard_tfms': False,
 
-    'lr': 2e-2,
-    'weight_decay': 1e-4,
+    'lr': 1e-1,
+    'weight_decay': 1e-5,
 
     'scheduler': 'OneCycle',
 
     'epochs': 400,
     'batch_size': 32,
-    'use_f16': True,
+    'use_f16': False,
     'use_mixup': False,
 
     'crop_size': [512, 512],
     'scaling_factors': [0.50, 2],
 }
 
-DEVICE_ID = 2
+DEVICE_ID = 0
 VAL_BATCH_SIZE = 4
 USE_F16 = False
-NUM_WORKERS = 8
+NUM_WORKERS = 16
 NUM_WORKERS_VAL = 6
-DATASET_DIR = '/home/bml/datasets/cities-scapes'
+DATASET_DIR = '/srv/datasets/cityscapes'
 EVALUATE_FREQ = 5
 
 
 wandb.init(project='semantic-segmentation', config=config)
 
-torch.cuda.set_device(DEVICE_ID)
-device = torch.device('cuda', DEVICE_ID)
+# torch.cuda.set_device(DEVICE_ID)
+device = torch.device('cuda')
 
 Model = load_model(config['model'])
 Dataset, ds_config = load_dataset(config['dataset'])
@@ -281,15 +281,19 @@ model = Model(in_channels=ds_config['in_channels'],
 # model.load_state_dict(torch.load(
 #     'model_weights/different_loss_fns/enet_citys_loss=ohem_mIOU=0.4692pth', map_location='cpu'))
 model = model.to(device)
+
+
 optimizer = Optimizer(model.parameters(),
                       lr=config['lr'],
                       weight_decay=config['weight_decay'])
 
-wandb.watch(model)
+# wandb.watch(model)
 
 if config['use_f16']:
     model, optimizer = amp.initialize(
         model, optimizer, opt_level="O2", keep_batchnorm_fp32=True)
+
+model = torch.nn.DataParallel(model)
 
 loss_fn = LossFn()
 loss_fn = loss_fn.to(device)

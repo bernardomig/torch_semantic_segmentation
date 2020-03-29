@@ -2,6 +2,15 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+__all__ = [
+    'FastSCNN',
+    'fastscnn',
+]
+
+
+def fastscnn(in_channels, out_channels):
+    return FastSCNN(in_channels, out_channels)
+
 
 class FastSCNN(nn.Module):
 
@@ -45,35 +54,14 @@ class FastSCNN(nn.Module):
         # by fusion module.
         self.classifier = Classifier(128, out_channels)
 
-        # It is helpful the use addicional losses from the Learning to Downsample
-        # and the Global Feature Extractor. This auxiliary classifiers are only used
-        # during training.
-        self.aux_classifier = nn.ModuleDict({
-            'downsample': Classifier(64, out_channels),
-            'features': Classifier(128, out_channels),
-        })
-
     def forward(self, input):
         downsample = self.downsample(input)
         features = self.features(downsample)
         fusion = self.fusion(features, downsample)
         classes = self.classifier(fusion)
 
-        if self.training:
-            aux_1 = self.aux_classifier['downsample'](downsample)
-            aux_2 = self.aux_classifier['features'](features)
-
-            return (
-                F.interpolate(classes, scale_factor=8,
-                              mode='bilinear', align_corners=True),
-                F.interpolate(aux_1, scale_factor=8,
-                              mode='bilinear', align_corners=True),
-                F.interpolate(aux_2, scale_factor=4 * 8,
-                              mode='bilinear', align_corners=True),
-            )
-        else:
-            return F.interpolate(
-                classes, scale_factor=8, mode='bilinear', align_corners=True)
+        return F.interpolate(
+            classes, scale_factor=8, mode='bilinear', align_corners=True)
 
 
 class FeatureFusionModule(nn.Module):

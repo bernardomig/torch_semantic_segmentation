@@ -47,7 +47,7 @@ class CamvidDataset(Dataset):
         example = self.examples[idx]
 
         image = example['image']
-        label = example['label']
+        label = example['mask']
 
         image = cv2.imread(image, cv2.IMREAD_COLOR)
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)

@@ -1,3 +1,3 @@
 
-from .enet import ENet
-from .fastscnn import FastSCNN
+from .enet import ENet, enet
+from .fastscnn import FastSCNN, fastscnn

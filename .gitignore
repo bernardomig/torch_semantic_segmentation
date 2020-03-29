@@ -138,3 +138,5 @@ checkpoints*
 
 # Weights & Biases training directory
 wandb
+weights
+model_weights

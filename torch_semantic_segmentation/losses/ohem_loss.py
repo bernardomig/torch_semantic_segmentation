@@ -15,16 +15,9 @@ def ohem_loss(input, target, ignore_index=-100, thresh_loss=-log(0.7), numel_fra
 
     loss, _ = torch.sort(loss, descending=True)
 
-    print("numel_frac = {}".format(numel_frac))
-
     if loss[n] > thresh_loss:
-        elems = loss[loss > thresh_loss]
-        print("loss[n] > thresh_loss: nelems = {}; n = {}"
-              .format(elems.numel(), n))
-
-        return elems.mean()
+        return loss[loss > thresh_loss].mean()
     else:
-        print("loss[n] < thresh_loss")
         return loss[:n].mean()
 
 

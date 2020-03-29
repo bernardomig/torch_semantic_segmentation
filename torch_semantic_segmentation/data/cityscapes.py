@@ -6,12 +6,12 @@ from numpy import array
 
 from torch.utils.data import Dataset
 
-CITIES = {
-    'train': ["jena", "zurich", "weimar", "ulm", "tubingen", "stuttgart",
-              "strasbourg", "monchengladbach", "krefeld", "hanover",
-              "hamburg", "erfurt", "dusseldorf", "darmstadt", "cologne",
-              "bremen", "bochum", "aachen"],
-    'val': ["frankfurt", "munster", "lindau"], }
+# CITIES = {
+#     'train': ["jena", "zurich", "weimar", "ulm", "tubingen", "stuttgart",
+#               "strasbourg", "monchengladbach", "krefeld", "hanover",
+#               "hamburg", "erfurt", "dusseldorf", "darmstadt", "cologne",
+#               "bremen", "bochum", "aachen"],
+#     'val': ["frankfurt", "munster", "lindau"], }
 CLASSES = array([
     'unlabeled', 'ego vehicle', 'rectification border', 'out of roi',
     'static', 'dynamic', 'ground', 'road', 'sidewalk', 'parking',
@@ -37,9 +37,10 @@ class CityScapesDataset(Dataset):
     CLASS_FREQ = CLASS_FREQ
 
     def __init__(self, root_dir, split='train', transforms=None):
-        cities = CITIES[split]
         images_dir = os.path.join(root_dir, 'leftImg8bit', split)
         labels_dir = os.path.join(root_dir, 'gtFine', split)
+
+        cities = os.listdir(images_dir)
 
         self.transforms = transforms
 

@@ -6,7 +6,7 @@ from ignite.metrics import Loss
 from ignite.metrics.confusion_matrix import ConfusionMatrix, cmAccuracy, mIoU, IoU
 
 from torch_semantic_segmentation.models import ENet
-from torch_semantic_segmentation.data import CityScapesDataset
+from torch_semantic_segmentation.data import CityScapesDataset, DeepDriveDataset
 
 import albumentations as albu
 from albumentations.pytorch import ToTensorV2 as ToTensor
@@ -47,29 +47,39 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     val_tfms = albu.Compose([
-        albu.Resize(1024, 2048),
+        albu.Resize(640, 1280),
         albu.Normalize(),
         ToTensor(),
     ])
 
     val_ds = [
         CityScapesDataset(
-            '/home/bml/datasets/cities-scapes',
+            '/srv/datasets/cityscapes',
             split='train', transforms=val_tfms),
         CityScapesDataset(
-            '/home/bml/datasets/cities-scapes',
+            '/srv/datasets/cityscapes',
             split='val', transforms=val_tfms),
     ]
+
+    # val_ds = [
+    #     DeepDriveDataset(
+    #         '/srv/datasets/bdd100k/bdd100k/seg/',
+    #         split='train', transforms=val_tfms),
+    #     DeepDriveDataset(
+    #         '/srv/datasets/bdd100k/bdd100k/seg/',
+    #         split='val', transforms=val_tfms),
+    # ]
 
     val_loaders = [
         torch.utils.data.DataLoader(
             ds, batch_size=4, num_workers=8, drop_last=False)
         for ds in val_ds]
 
-    device = torch.device('cuda:3')
+    device = torch.device('cuda:0')
 
     model = ENet(3, 19)
-    model.load_state_dict(torch.load(args.state_dict, map_location='cpu'))
+    model.load_state_dict(torch.load(
+        args.state_dict, map_location='cpu')['model'])
     model = model.to(device)
 
     counts = torch.load('city-weights.pth')[:19]

@@ -1,6 +1,15 @@
+from typing import Tuple
+
 import torch
+from torch import Tensor
 from torch import nn
 from torch.nn import functional as F
+
+__all__ = ['ENet', 'enet']
+
+
+def enet(in_channels, out_channels):
+    return ENet(in_channels, out_channels)
 
 
 class ENet(nn.Module):
@@ -8,82 +17,74 @@ class ENet(nn.Module):
     def __init__(self, in_channels, out_channels):
         super().__init__()
 
-        self.init_block = InitialBlock(3, 16)
+        self.head = InitialBlock(in_channels, 16)
 
-        self.bottleneck1_0 = DownsamplingBottleneck(16, 64, dropout_p=0.01)
-        self.bottleneck1_1 = RegularBottleneck(64, 64, dropout_p=0.01)
-        self.bottleneck1_2 = RegularBottleneck(64, 64, dropout_p=0.01)
-        self.bottleneck1_3 = RegularBottleneck(64, 64, dropout_p=0.01)
-        self.bottleneck1_4 = RegularBottleneck(64, 64, dropout_p=0.01)
+        self.layer1 = nn.ModuleList([
+            DownsamplingBlock(16, 64, dropout_p=0.01),
+            RegularBlock(64, 64, dropout_p=0.01),
+            RegularBlock(64, 64, dropout_p=0.01),
+            RegularBlock(64, 64, dropout_p=0.01),
+            RegularBlock(64, 64, dropout_p=0.01),
+        ])
 
-        self.bottleneck2_0 = DownsamplingBottleneck(64, 128)
-        self.bottleneck2_1 = RegularBottleneck(128, 128)
-        self.bottleneck2_2 = RegularBottleneck(128, 128, dilation=2)
-        self.bottleneck2_3 = RegularBottleneck(128, 128, kernel_size=5)
-        self.bottleneck2_4 = RegularBottleneck(128, 128, dilation=4)
-        self.bottleneck2_5 = RegularBottleneck(128, 128)
-        self.bottleneck2_6 = RegularBottleneck(128, 128, dilation=8)
-        self.bottleneck2_7 = RegularBottleneck(128, 128, kernel_size=5)
-        self.bottleneck2_8 = RegularBottleneck(128, 128, dilation=16)
+        self.layer2 = nn.ModuleList([
+            DownsamplingBlock(64, 128),
+            RegularBlock(128, 128),
+            RegularBlock(128, 128, dilation=2),
+            RegularBlock(128, 128, kernel_size=5),
+            RegularBlock(128, 128, dilation=4),
+            RegularBlock(128, 128),
+            RegularBlock(128, 128, dilation=8),
+            RegularBlock(128, 128, kernel_size=5),
+            RegularBlock(128, 128, dilation=16),
+        ])
 
-        self.bottleneck3_1 = RegularBottleneck(128, 128)
-        self.bottleneck3_2 = RegularBottleneck(128, 128, dilation=2)
-        self.bottleneck3_3 = RegularBottleneck(128, 128, kernel_size=5)
-        self.bottleneck3_4 = RegularBottleneck(128, 128, dilation=4)
-        self.bottleneck3_5 = RegularBottleneck(128, 128)
-        self.bottleneck3_6 = RegularBottleneck(128, 128, dilation=8)
-        self.bottleneck3_7 = RegularBottleneck(128, 128, kernel_size=5)
-        self.bottleneck3_8 = RegularBottleneck(128, 128, dilation=16)
+        self.layer3 = nn.ModuleList([
+            RegularBlock(128, 128),
+            RegularBlock(128, 128, dilation=2),
+            RegularBlock(128, 128, kernel_size=5),
+            RegularBlock(128, 128, dilation=4),
+            RegularBlock(128, 128),
+            RegularBlock(128, 128, dilation=8),
+            RegularBlock(128, 128, kernel_size=5),
+            RegularBlock(128, 128, dilation=16),
+        ])
 
-        self.bottleneck4_0 = UpsamplingBottleneck(128, 64)
-        self.bottleneck4_1 = RegularBottleneck(64, 64)
-        self.bottleneck4_2 = RegularBottleneck(64, 64)
+        self.layer4 = nn.ModuleList([
+            UpsamplingBlock(128, 64),
+            RegularBlock(64, 64),
+            RegularBlock(64, 64),
+        ])
 
-        self.bottleneck5_0 = UpsamplingBottleneck(64, 16)
-        self.bottleneck5_1 = RegularBottleneck(16, 16)
+        self.layer5 = nn.ModuleList([
+            UpsamplingBlock(64, 16),
+            RegularBlock(16, 16),
+        ])
 
-        self.fullconv = nn.Conv2d(16, out_channels, kernel_size=3, padding=1)
+        self.classifier = nn.Conv2d(16, out_channels, 3, padding=1)
 
-    def forward(self, x):
+    def forward(self, input):
+        x = self.head(input)
+        indices = []
+        layers = [self.layer1, self.layer2, self.layer3,
+                  self.layer4, self.layer5]
+        for layer in layers:
+            for block in layer.children():
+                if isinstance(block, RegularBlock):
+                    x = block(x)
+                elif isinstance(block, DownsamplingBlock):
+                    x, i = block(x)
+                    indices = [i, *indices]
+                elif isinstance(block, UpsamplingBlock):
+                    i, *indices = indices
+                    x = block(x, i)
+                else:
+                    raise RuntimeError("Unknown block type in ENet")
 
-        x = self.init_block(x)
+        x = self.classifier(x)
 
-        x, i1 = self.bottleneck1_0(x)
-
-        x = self.bottleneck1_1(x)
-        x = self.bottleneck1_2(x)
-        x = self.bottleneck1_3(x)
-        x = self.bottleneck1_4(x)
-
-        x, i2 = self.bottleneck2_0(x)
-        x = self.bottleneck2_1(x)
-        x = self.bottleneck2_2(x)
-        x = self.bottleneck2_3(x)
-        x = self.bottleneck2_4(x)
-        x = self.bottleneck2_5(x)
-        x = self.bottleneck2_6(x)
-        x = self.bottleneck2_7(x)
-        x = self.bottleneck2_8(x)
-
-        x = self.bottleneck3_1(x)
-        x = self.bottleneck3_2(x)
-        x = self.bottleneck3_3(x)
-        x = self.bottleneck3_4(x)
-        x = self.bottleneck3_5(x)
-        x = self.bottleneck3_6(x)
-        x = self.bottleneck3_7(x)
-        x = self.bottleneck3_8(x)
-
-        x = self.bottleneck4_0(x, i2)
-        x = self.bottleneck4_1(x)
-        x = self.bottleneck4_2(x)
-
-        x = self.bottleneck5_0(x, i1)
-        x = self.bottleneck5_1(x)
-
-        x = self.fullconv(x)
-
-        return F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=True)
+        return F.interpolate(x, scale_factor=2,
+                             mode='bilinear', align_corners=True)
 
 
 class InitialBlock(nn.Module):
@@ -91,118 +92,80 @@ class InitialBlock(nn.Module):
     def __init__(self, in_channels, out_channels):
         if out_channels <= in_channels:
             raise ValueError(
-                "out_channels has to be greater than the in_channels")
+                "output channels must be greater than the input channels")
 
         super().__init__()
 
-        self.conv = nn.Conv2d(in_channels, out_channels -
-                              in_channels, kernel_size=3, padding=1, stride=2)
+        self.conv = ConvBlock(
+            in_channels, out_channels - in_channels,
+            kernel_size=3, padding=1, stride=2, with_relu=False)
         self.pool = nn.MaxPool2d(kernel_size=2)
-
-        self.bn = nn.BatchNorm2d(out_channels)
         self.activation = nn.PReLU()
 
     def forward(self, input):
-        x_conv = self.conv(input)
-        x_pool = self.pool(input)
-
-        x = torch.cat([x_conv, x_pool], dim=1)
-        x = self.bn(x)
-
+        left = self.conv(input)
+        right = self.pool(input)
+        x = torch.cat([left, right], dim=1)
         return self.activation(x)
 
 
-class RegularBottleneck(nn.Module):
-
+class RegularBlock(nn.Module):
     def __init__(self, in_channels, out_channels,
                  kernel_size=3, dilation=1, projection_ratio=4, dropout_p=0.1):
         super().__init__()
 
-        mid_channels = in_channels // projection_ratio
-
-        self.conv1 = nn.Sequential(
-            nn.Conv2d(in_channels, mid_channels, kernel_size=1, bias=False),
-            nn.BatchNorm2d(mid_channels),
-            nn.PReLU(),
-        )
+        width = in_channels // projection_ratio
+        self.conv1 = ConvBlock(in_channels, width, 1)
 
         if kernel_size == 3:
-            self.conv2 = nn.Sequential(
-                nn.Conv2d(mid_channels, mid_channels, kernel_size=3,
-                          padding=dilation, dilation=dilation, bias=False),
-                nn.BatchNorm2d(mid_channels),
-                nn.PReLU(),
-            )
+            self.conv2 = ConvBlock(
+                width, width, 3,
+                padding=dilation, dilation=dilation)
         elif kernel_size == 5:
             self.conv2 = nn.Sequential(
-                nn.Conv2d(mid_channels, mid_channels, kernel_size=(
-                    1, 5), padding=(0, 2), bias=False),
-                nn.BatchNorm2d(mid_channels),
-                nn.Conv2d(mid_channels, mid_channels, kernel_size=(
-                    5, 1), padding=(2, 0), bias=False),
-                nn.BatchNorm2d(mid_channels),
+                ConvBlock(width, width, (1, 5),
+                          padding=(0, 2), with_relu=False),
+                ConvBlock(width, width, (5, 1),
+                          padding=(2, 0), with_relu=False),
                 nn.PReLU(),
             )
         else:
-            raise ValueError("kernel_size must be either 3 or 5")
+            raise ValueError(
+                "kernel_size must be either 3 or 5. Got {}."
+                .format(kernel_size))
 
-        self.conv3 = nn.Sequential(
-            nn.Conv2d(mid_channels, out_channels, kernel_size=1, bias=False),
-            nn.BatchNorm2d(out_channels),
-        )
+        self.conv3 = ConvBlock(width, out_channels, 1, with_relu=False)
 
         self.dropout = nn.Dropout2d(p=dropout_p)
-
         self.activation = nn.PReLU()
 
     def forward(self, input):
-
         x = self.conv1(input)
         x = self.conv2(x)
         x = self.conv3(x)
         x = self.dropout(x)
 
         if input.shape != x.shape:
-            b, _, h, w = input.shape
-            c = x.size(1) - input.size(1)
-            pad = torch.zeros((b, c, h, w), dtype=x.dtype, device=x.device)
-            input = torch.cat([input, pad], dim=1)
+            input = pad_zeros(input, x.shape)
 
-        return self.activation(input + x)
+        return self.activation(x + input)
 
 
-class DownsamplingBottleneck(nn.Module):
-
+class DownsamplingBlock(nn.Module):
     def __init__(self, in_channels, out_channels,
                  projection_ratio=4, dropout_p=0.1):
         super().__init__()
 
-        mid_channels = in_channels // projection_ratio
+        width = in_channels // projection_ratio
 
-        self.conv1 = nn.Sequential(
-            nn.Conv2d(in_channels, mid_channels,
-                      kernel_size=2, stride=2, bias=False),
-            nn.BatchNorm2d(mid_channels),
-            nn.PReLU(),
-        )
-
-        self.conv2 = nn.Sequential(
-            nn.Conv2d(mid_channels, mid_channels, kernel_size=3,
-                      padding=1, bias=False),
-            nn.BatchNorm2d(mid_channels),
-            nn.PReLU(),
-        )
-
-        self.conv3 = nn.Sequential(
-            nn.Conv2d(mid_channels, out_channels, kernel_size=1, bias=False),
-            nn.BatchNorm2d(out_channels),
-        )
-
+        self.conv1 = ConvBlock(in_channels, width, 1)
+        self.conv2 = ConvBlock(width, width, 3, 1, stride=2)
+        self.conv3 = ConvBlock(width, out_channels, 1, with_relu=False)
         self.dropout = nn.Dropout2d(p=dropout_p)
 
-        self.activation = nn.PReLU()
+        self.downsample = nn.MaxPool2d(kernel_size=2, return_indices=True)
 
-        self.pool = nn.MaxPool2d(kernel_size=2, return_indices=True)
+        self.activation = nn.PReLU()
 
     def forward(self, input):
         x = self.conv1(input)
@@ -210,60 +173,69 @@ class DownsamplingBottleneck(nn.Module):
         x = self.conv3(x)
         x = self.dropout(x)
 
-        s, indices = self.pool(input)
+        input, indices = self.downsample(input)
 
-        if s.shape != x.shape:
-            b, _, h, w = s.shape
-            c = x.size(1) - s.size(1)
-            pad = torch.zeros((b, c, h, w), dtype=x.dtype, device=x.device)
-            s = torch.cat([s, pad], dim=1)
+        if input.shape != x.shape:
+            input = pad_zeros(input, x.shape)
 
-        return self.activation(s + x), indices
+        return self.activation(x + input), indices
 
 
-class UpsamplingBottleneck(nn.Module):
+class UpsamplingBlock(nn.Module):
+
     def __init__(self, in_channels, out_channels, projection_ratio=4, dropout_p=0.1):
         super().__init__()
 
-        reduced_depth = in_channels // projection_ratio
+        width = in_channels // projection_ratio
 
-        self.conv1 = nn.Sequential(
-            nn.ConvTranspose2d(in_channels, reduced_depth,
-                               kernel_size=1, bias=False),
-            nn.BatchNorm2d(reduced_depth),
-            nn.PReLU(),
-        )
-
+        self.conv1 = ConvBlock(in_channels, width, 1)
         self.conv2 = nn.Sequential(
-            nn.ConvTranspose2d(reduced_depth, reduced_depth, kernel_size=3,
+            nn.ConvTranspose2d(width, width, 3,
                                stride=2, padding=1, output_padding=1, bias=False),
-            nn.BatchNorm2d(reduced_depth),
+            nn.BatchNorm2d(width),
             nn.PReLU(),
         )
+        self.conv3 = ConvBlock(width, out_channels, 1)
+        self.dropout = nn.Dropout2d(p=dropout_p)
 
-        self.conv3 = nn.Sequential(
-            nn.ConvTranspose2d(reduced_depth, out_channels,
-                               kernel_size=1, bias=False),
-            nn.BatchNorm2d(out_channels),
-            nn.Dropout2d(p=dropout_p)
-        )
-
-        self.unpool = nn.MaxUnpool2d(kernel_size=2, stride=2)
-        self.pad = nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False),
-            nn.BatchNorm2d(out_channels)
-        )
+        self.upsample = nn.ModuleDict({
+            'unpool': nn.MaxUnpool2d(kernel_size=2, stride=2),
+            'conv': ConvBlock(in_channels, out_channels, 1, with_relu=False),
+        })
 
         self.activation = nn.PReLU()
 
     def forward(self, input, indices):
-        s = self.conv1(input)
-        s = self.conv2(s)
-        s = self.conv3(s)
+        left = self.conv1(input)
+        left = self.conv2(left)
+        left = self.conv3(left)
+        left = self.dropout(left)
 
-        x = self.pad(input)
-        x = self.unpool(x, indices, output_size=s.size())
+        right = self.upsample['conv'](input)
+        right = self.upsample['unpool'](
+            right, indices=indices, output_size=left.size())
 
-        x = x + s
-        x = self.activation(x)
-        return x
+        return self.activation(left + right)
+
+
+def ConvBlock(in_channels, out_channels, kernel_size,
+              padding=0, stride=1, dilation=1, with_relu=True):
+    layers = [
+        nn.Conv2d(in_channels, out_channels, kernel_size,
+                  padding=padding, stride=stride, dilation=dilation,
+                  bias=False),
+        nn.BatchNorm2d(out_channels),
+    ]
+    if with_relu:
+        layers += [nn.PReLU()]
+    return nn.Sequential(*layers)
+
+
+@torch.jit.script
+def pad_zeros(input: Tensor, shape: Tuple[int, int, int, int]):
+    b, _, h, w = input.shape
+
+    c = int(shape[1] - input.size(1))
+
+    pad = torch.zeros((b, c, h, w)).to(input)
+    return torch.cat([input, pad], dim=1)
