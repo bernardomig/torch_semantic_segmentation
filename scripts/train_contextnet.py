@@ -1,5 +1,6 @@
 import argparse
 import os
+from logging import info
 
 import torch
 from torch import nn
@@ -25,12 +26,10 @@ from torch_semantic_segmentation.data import (
     CityScapesDataset, DeepDriveDataset, MapillaryVistasDataset)
 from torch_semantic_segmentation.losses import OHEMLoss
 
-DATASET_DIR = os.environ['DATASET_DIR']
-if not os.path.isdir(DATASET_DIR):
-    from sys import exit
-    print("DATASET_DIR is invalid. Please specity one using environment variables.")
-    exit(-1)
+from torch_semantic_segmentation.utils.training import *
+from torch_semantic_segmentation.utils.logging import *
 
+import wandb
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--batch_size', type=int, required=True)
@@ -38,24 +37,20 @@ parser.add_argument('--learning_rate', type=float, required=True)
 parser.add_argument('--weight_decay', type=float, default=1e-5)
 parser.add_argument('--epochs', type=int, required=True)
 parser.add_argument('--crop_size', type=int, default=768)
-
 parser.add_argument('--state_dict', type=str, required=False)
-
 parser.add_argument('--distributed', action='store_true')
 parser.add_argument('--local_rank', type=int)
-
 args = parser.parse_args()
 
+distributed = args.distributed
+world_size, world_rank, local_rank = setup_distributed(
+    distributed, args.local_rank)
 
-if args.distributed:
-    dist.init_process_group('nccl', init_method='env://')
-    world_size = dist.get_world_size()
-    world_rank = dist.get_rank()
-    local_rank = args.local_rank
-else:
-    local_rank = 0
+if local_rank == 0:
+    wandb.init(
+        project='torch-semantic-segmentation',
+        config=args)
 
-torch.cuda.set_device(local_rank)
 device = torch.device('cuda')
 
 train_tfms = albu.Compose([
@@ -71,34 +66,21 @@ val_tfms = albu.Compose([
     ToTensor(),
 ])
 
-cityscapes_dir = os.path.join(DATASET_DIR, 'cityscapes')
-train_dataset = CityScapesDataset(
-    cityscapes_dir, split='train', transforms=train_tfms)
-val_dataset = CityScapesDataset(
-    cityscapes_dir, split='val', transforms=val_tfms)
+Dataset = create_dataset('cityscapes')
+train_dataset = Dataset(split='train', transforms=train_tfms)
+val_dataset = Dataset(split='val', transforms=val_tfms)
 
-# dataset_dir = os.path.join(DATASET_DIR, 'bdd100k/bdd100k/seg')
-# train_dataset = DeepDriveDataset(
-#     dataset_dir, split='train', transforms=train_tfms)
-# val_dataset = DeepDriveDataset(
-#     dataset_dir, split='val', transforms=val_tfms)
-
-if args.distributed:
-    kwargs = dict(num_replicas=world_size, rank=local_rank)
-    train_sampler = DistributedSampler(train_dataset, **kwargs)
-    kwargs['shuffle'] = False
-    val_sampler = DistributedSampler(val_dataset, **kwargs)
-else:
-    train_sampler = None
-    val_sampler = None
+sampler_args = dict(world_size=world_size,
+                    local_rank=local_rank,
+                    enable=distributed)
 
 train_loader = DataLoader(
     train_dataset,
     batch_size=args.batch_size,
-    shuffle=not args.distributed,
     drop_last=True,
     num_workers=8,
-    sampler=train_sampler,
+    sampler=create_sampler(train_dataset, **sampler_args),
+    shuffle=not distributed,
 )
 val_loader = DataLoader(
     val_dataset,
@@ -106,7 +88,7 @@ val_loader = DataLoader(
     shuffle=False,
     drop_last=False,
     num_workers=8,
-    sampler=val_sampler,
+    sampler=create_sampler(val_dataset, training=False, **sampler_args),
 )
 
 
@@ -162,12 +144,8 @@ evaluator = create_segmentation_evaluator(
 
 
 if local_rank == 0:
-    from time import localtime, strftime
-    dirname = strftime("%d-%m-%Y_%Hh%Mm%Ss", localtime())
-    dirname = 'checkpoints/contextnet/{}'.format(dirname)
-
     checkpointer = ModelCheckpoint(
-        dirname=dirname,
+        dirname=os.path.join(wandb.run.dir, 'weights'),
         filename_prefix='contextnet',
         score_name='miou',
         score_function=lambda engine: engine.state.metrics['miou'],
@@ -180,12 +158,17 @@ if local_rank == 0:
     )
 
 
-@trainer.on(Events.EPOCH_COMPLETED(every=2))
-def _evaluate(_engine):
-    state = evaluator.run(val_loader)
-    if local_rank == 0:
-        print("Epoch {}: {}"
-              .format(trainer.state.epoch, state.metrics['miou']))
+@trainer.on(Events.EPOCH_COMPLETED)
+def evaluate(engine):
+    evaluator.run(val_loader)
+
+
+if local_rank == 0:
+    setup_valiation_logging(
+        evaluator,
+        global_step_transform=global_step_from_engine(trainer))
+
+    setup_wandb_logging(trainer, evaluator)
 
 
 trainer.run(train_loader, max_epochs=args.epochs)
