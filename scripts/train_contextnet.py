@@ -49,7 +49,8 @@ world_size, world_rank, local_rank = setup_distributed(
 if local_rank == 0:
     wandb.init(
         project='torch-semantic-segmentation',
-        config=args)
+        config=args,
+        group='contextnet')
 
 device = torch.device('cuda')
 
@@ -107,7 +108,6 @@ optimizer = torch.optim.AdamW(
     weight_decay=args.weight_decay,
 )
 
-# loss_fn = OHEMLoss(ignore_index=255, numel_frac=0.05)
 counts = torch.from_numpy(CityScapesDataset.CLASS_FREQ.astype('f4'))
 weight = 1. / torch.log(1.02 + counts)
 loss_fn = torch.nn.CrossEntropyLoss(ignore_index=255, weight=weight)
@@ -143,7 +143,13 @@ evaluator = create_segmentation_evaluator(
 )
 
 
+@trainer.on(Events.ITERATION_COMPLETED(every=400))
+def evaluate(engine):
+    evaluator.run(val_loader)
+
+
 if local_rank == 0:
+
     checkpointer = ModelCheckpoint(
         dirname=os.path.join(wandb.run.dir, 'weights'),
         filename_prefix='contextnet',
@@ -157,18 +163,6 @@ if local_rank == 0:
         to_save={'model': model if not args.distributed else model.module},
     )
 
-
-@trainer.on(Events.EPOCH_COMPLETED)
-def evaluate(engine):
-    evaluator.run(val_loader)
-
-
-if local_rank == 0:
-    setup_valiation_logging(
-        evaluator,
-        global_step_transform=global_step_from_engine(trainer))
-
-    setup_wandb_logging(trainer, evaluator)
-
+    setup_logging(wandb.run.dir, trainer, evaluator, freq=100)
 
 trainer.run(train_loader, max_epochs=args.epochs)
