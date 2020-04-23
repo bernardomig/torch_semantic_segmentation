@@ -18,7 +18,7 @@ from ignite.contrib.handlers import (
 import albumentations as albu
 from albumentations.pytorch import ToTensorV2 as ToTensor
 
-from torch_semantic_segmentation.models.contextnet import contextnet14
+from torch_semantic_segmentation.models.fcn import fcn8_resnet18
 from torch_semantic_segmentation.engine import (
     create_segmentation_trainer, create_segmentation_evaluator)
 from torch_semantic_segmentation.data import (
@@ -40,6 +40,7 @@ parser.add_argument('--epochs', type=int, required=True)
 parser.add_argument('--crop_size', type=int, default=768)
 
 parser.add_argument('--state_dict', type=str, required=False)
+parser.add_argument('--transfer_state_dict', type=str, required=False)
 
 parser.add_argument('--distributed', action='store_true')
 parser.add_argument('--local_rank', type=int)
@@ -62,26 +63,27 @@ train_tfms = albu.Compose([
     albu.RandomScale([0.5, 2.0]),
     albu.RandomCrop(args.crop_size, args.crop_size),
     albu.HorizontalFlip(),
-    albu.HueSaturationValue(),
     albu.Normalize(),
     ToTensor(),
 ])
 val_tfms = albu.Compose([
+    albu.CenterCrop(704, 1280),
     albu.Normalize(),
     ToTensor(),
 ])
 
-cityscapes_dir = os.path.join(DATASET_DIR, 'cityscapes')
-train_dataset = CityScapesDataset(
-    cityscapes_dir, split='train', transforms=train_tfms)
-val_dataset = CityScapesDataset(
-    cityscapes_dir, split='val', transforms=val_tfms)
+ds_dir = os.path.join(DATASET_DIR, 'bdd100k/bdd100k/seg')
+train_dataset = DeepDriveDataset(
+    ds_dir, split='train', transforms=train_tfms)
+val_dataset = DeepDriveDataset(
+    ds_dir, split='val', transforms=val_tfms)
 
-# dataset_dir = os.path.join(DATASET_DIR, 'bdd100k/bdd100k/seg')
-# train_dataset = DeepDriveDataset(
-#     dataset_dir, split='train', transforms=train_tfms)
-# val_dataset = DeepDriveDataset(
-#     dataset_dir, split='val', transforms=val_tfms)
+# cityscapes_dir = os.path.join(DATASET_DIR, 'cityscapes')
+# train_dataset = CityScapesDataset(
+#     cityscapes_dir, split='train', transforms=train_tfms)
+# val_dataset = CityScapesDataset(
+#     cityscapes_dir, split='val', transforms=val_tfms)
+
 
 if args.distributed:
     kwargs = dict(num_replicas=world_size, rank=local_rank)
@@ -110,7 +112,16 @@ val_loader = DataLoader(
 )
 
 
-model = contextnet14(3, 19)
+model = fcn8_resnet18(3, 19)
+
+if args.transfer_state_dict is not None:
+    state_dict = torch.load(args.transfer_state_dict, map_location='cpu')
+    state_dict = {
+        '.'.join(param.split('.')[1:]): weights
+        for param, weights in state_dict.items()
+        if param.split('.')[0] == 'features'
+    }
+    model.backbone.load_state_dict(state_dict)
 
 if args.state_dict is not None:
     state_dict = torch.load(args.state_dict, map_location='cpu')
@@ -120,8 +131,11 @@ if args.state_dict is not None:
 model = model.to(device)
 
 optimizer = torch.optim.AdamW(
-    model.parameters(),
-    lr=args.learning_rate,
+    [
+        {'params': model.backbone.layer3.parameters(), 'lr': args.learning_rate / 10},
+        {'params': model.backbone.layer4.parameters(), 'lr': args.learning_rate / 3},
+        {'params': model.classifiers.parameters(), 'lr': args.learning_rate},
+    ],
     weight_decay=args.weight_decay,
 )
 
@@ -164,11 +178,11 @@ evaluator = create_segmentation_evaluator(
 if local_rank == 0:
     from time import localtime, strftime
     dirname = strftime("%d-%m-%Y_%Hh%Mm%Ss", localtime())
-    dirname = 'checkpoints/contextnet/{}'.format(dirname)
+    dirname = 'checkpoints/fcn8_resnet18/{}'.format(dirname)
 
     checkpointer = ModelCheckpoint(
         dirname=dirname,
-        filename_prefix='contextnet',
+        filename_prefix='fcn8_resnet18',
         score_name='miou',
         score_function=lambda engine: engine.state.metrics['miou'],
         n_saved=5,

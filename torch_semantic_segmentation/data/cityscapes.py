@@ -6,12 +6,6 @@ from numpy import array
 
 from torch.utils.data import Dataset
 
-# CITIES = {
-#     'train': ["jena", "zurich", "weimar", "ulm", "tubingen", "stuttgart",
-#               "strasbourg", "monchengladbach", "krefeld", "hanover",
-#               "hamburg", "erfurt", "dusseldorf", "darmstadt", "cologne",
-#               "bremen", "bochum", "aachen"],
-#     'val': ["frankfurt", "munster", "lindau"], }
 CLASSES = array([
     'unlabeled', 'ego vehicle', 'rectification border', 'out of roi',
     'static', 'dynamic', 'ground', 'road', 'sidewalk', 'parking',
@@ -37,17 +31,31 @@ class CityScapesDataset(Dataset):
     CLASS_FREQ = CLASS_FREQ
 
     def __init__(self, root_dir, split='train', transforms=None):
-        images_dir = os.path.join(root_dir, 'leftImg8bit', split)
-        labels_dir = os.path.join(root_dir, 'gtFine', split)
+        if split in {'train', 'val'}:
+            images_dir = os.path.join(root_dir, 'leftImg8bit', split)
+            labels_dir = os.path.join(root_dir, 'gtFine', split)
 
-        cities = os.listdir(images_dir)
+            cities = os.listdir(images_dir)
+
+            self.examples = list(self._generate_examples(
+                cities, images_dir, labels_dir))
+        elif split == 'trainextra':
+            images_dir = os.path.join(root_dir, 'leftImg8bit', 'train_extra')
+            labels_dir = os.path.join(root_dir, 'gtCoarse', 'train_extra')
+            cities = os.listdir(images_dir)
+
+            self.examples = list(self._generate_examples(
+                cities, images_dir, labels_dir, coarse=True))
+        else:
+            raise ValueError(
+                "Invalid split. Expected `train`, `val`, `trainextra`. Got {}."
+                .format(split))
 
         self.transforms = transforms
 
-        self.examples = list(self._generate_examples(
-            cities, images_dir, labels_dir))
+    def _generate_examples(self, cities, images_dir, labels_dir, coarse=False):
+        labels_type = 'gtFine' if not coarse else 'gtCoarse'
 
-    def _generate_examples(self, cities, images_dir, labels_dir):
         for city in cities:
             city_dir = os.path.join(images_dir, city)
 
@@ -55,7 +63,7 @@ class CityScapesDataset(Dataset):
                 id = f[:-16]
                 img = os.path.join(images_dir, city, f)
                 label = os.path.join(
-                    labels_dir, city, id + '_gtFine_labelIds.png')
+                    labels_dir, city, id + f'_{labels_type}_labelIds.png')
                 yield {
                     'image': img,
                     'label': label,

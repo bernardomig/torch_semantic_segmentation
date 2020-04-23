@@ -29,39 +29,39 @@ class ENet(nn.Module):
 
         self.layer2 = nn.ModuleList([
             DownsamplingBlock(64, 128),
-            RegularBlock(128, 128),
-            RegularBlock(128, 128, dilation=2),
-            RegularBlock(128, 128, kernel_size=5),
-            RegularBlock(128, 128, dilation=4),
-            RegularBlock(128, 128),
-            RegularBlock(128, 128, dilation=8),
-            RegularBlock(128, 128, kernel_size=5),
-            RegularBlock(128, 128, dilation=16),
+            RegularBlock(128, 128, dropout_p=0.1),
+            RegularBlock(128, 128, dilation=2, dropout_p=0.1),
+            RegularBlock(128, 128, kernel_size=5, dropout_p=0.1),
+            RegularBlock(128, 128, dilation=4, dropout_p=0.1),
+            RegularBlock(128, 128, dropout_p=0.1),
+            RegularBlock(128, 128, dilation=8, dropout_p=0.1),
+            RegularBlock(128, 128, kernel_size=5, dropout_p=0.1),
+            RegularBlock(128, 128, dilation=16, dropout_p=0.1),
         ])
 
         self.layer3 = nn.ModuleList([
             RegularBlock(128, 128),
-            RegularBlock(128, 128, dilation=2),
-            RegularBlock(128, 128, kernel_size=5),
-            RegularBlock(128, 128, dilation=4),
+            RegularBlock(128, 128, dilation=2, dropout_p=0.1),
+            RegularBlock(128, 128, kernel_size=5, dropout_p=0.1),
+            RegularBlock(128, 128, dilation=4, dropout_p=0.1),
             RegularBlock(128, 128),
-            RegularBlock(128, 128, dilation=8),
-            RegularBlock(128, 128, kernel_size=5),
-            RegularBlock(128, 128, dilation=16),
+            RegularBlock(128, 128, dilation=8, dropout_p=0.1),
+            RegularBlock(128, 128, kernel_size=5, dropout_p=0.1),
+            RegularBlock(128, 128, dilation=16, dropout_p=0.1),
         ])
 
         self.layer4 = nn.ModuleList([
             UpsamplingBlock(128, 64),
-            RegularBlock(64, 64),
-            RegularBlock(64, 64),
+            RegularBlock(64, 64, dropout_p=0.1),
+            RegularBlock(64, 64, dropout_p=0.1),
         ])
 
         self.layer5 = nn.ModuleList([
             UpsamplingBlock(64, 16),
-            RegularBlock(16, 16),
+            RegularBlock(16, 16, dropout_p=0.1),
         ])
 
-        self.classifier = nn.Conv2d(16, out_channels, 3, padding=1)
+        self.classifier = nn.Conv2d(16, out_channels, 1),
 
     def forward(self, input):
         x = self.head(input)

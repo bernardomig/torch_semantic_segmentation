@@ -18,7 +18,7 @@ from ignite.contrib.handlers import (
 import albumentations as albu
 from albumentations.pytorch import ToTensorV2 as ToTensor
 
-from torch_semantic_segmentation.models.contextnet import contextnet14
+from torch_semantic_segmentation.models.lednet import lednet
 from torch_semantic_segmentation.engine import (
     create_segmentation_trainer, create_segmentation_evaluator)
 from torch_semantic_segmentation.data import (
@@ -62,7 +62,6 @@ train_tfms = albu.Compose([
     albu.RandomScale([0.5, 2.0]),
     albu.RandomCrop(args.crop_size, args.crop_size),
     albu.HorizontalFlip(),
-    albu.HueSaturationValue(),
     albu.Normalize(),
     ToTensor(),
 ])
@@ -71,17 +70,11 @@ val_tfms = albu.Compose([
     ToTensor(),
 ])
 
-cityscapes_dir = os.path.join(DATASET_DIR, 'cityscapes')
+dataset_dir = os.path.join(DATASET_DIR, 'cityscapes')
 train_dataset = CityScapesDataset(
-    cityscapes_dir, split='train', transforms=train_tfms)
+    dataset_dir, split='train', include_extra=True, transforms=train_tfms)
 val_dataset = CityScapesDataset(
-    cityscapes_dir, split='val', transforms=val_tfms)
-
-# dataset_dir = os.path.join(DATASET_DIR, 'bdd100k/bdd100k/seg')
-# train_dataset = DeepDriveDataset(
-#     dataset_dir, split='train', transforms=train_tfms)
-# val_dataset = DeepDriveDataset(
-#     dataset_dir, split='val', transforms=val_tfms)
+    dataset_dir, split='val', transforms=val_tfms)
 
 if args.distributed:
     kwargs = dict(num_replicas=world_size, rank=local_rank)
@@ -110,7 +103,7 @@ val_loader = DataLoader(
 )
 
 
-model = contextnet14(3, 19)
+model = lednet(3, 19)
 
 if args.state_dict is not None:
     state_dict = torch.load(args.state_dict, map_location='cpu')
@@ -164,11 +157,11 @@ evaluator = create_segmentation_evaluator(
 if local_rank == 0:
     from time import localtime, strftime
     dirname = strftime("%d-%m-%Y_%Hh%Mm%Ss", localtime())
-    dirname = 'checkpoints/contextnet/{}'.format(dirname)
+    dirname = 'checkpoints/lednet/{}'.format(dirname)
 
     checkpointer = ModelCheckpoint(
         dirname=dirname,
-        filename_prefix='contextnet',
+        filename_prefix='lednet',
         score_name='miou',
         score_function=lambda engine: engine.state.metrics['miou'],
         n_saved=5,
