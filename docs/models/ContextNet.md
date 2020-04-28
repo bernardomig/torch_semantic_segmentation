@@ -12,11 +12,11 @@ Keywords: Branch networks, network compression, pyramid networks.
 
 | Name                | #Parameters | Frames/sec (1) |
 | ------------------- | ----------- | -------------- |
-| ContextNet18        | 0.850M      | 21.0           |
-| ContextNet14        | 0.850M      | 18.3           |
-| ContextNet12        | 0.850M      | 11.4           |
-| ContextNet14-500(2) | 0.500M      | 20.6           |
-| ContextNet14-160(2) | 0.160M      | 22.0           |
+| ContextNet18        | 0.850M      | 150.0          |
+| ContextNet14        | 0.850M      | 135.5          |
+| ContextNet12        | 0.850M      | 62.61          |
+| ContextNet14-500(2) | 0.500M      |                |
+| ContextNet14-160(2) | 0.160M      |                |
 
 1. The performance benchmark for frames/sec was performed using a _NVIDIA RTX2080TI_, with a batch-size of 1 and a image size of 1920x1080. Check the benchmark for your system with the `benchmark_contextnet.py` script.
 2. Both ContextNet14-500 and ContextNet14-160 are implementation with lower memory footprint.
@@ -76,8 +76,8 @@ Network prunning is used to reduce the network of network parameters and has eff
 To benchmark the model in a new hardware, run the script `scripts/contextnet/benchmark_contextnet.py` as follows:
 
 ```
-python benchmark_contextnet.py \ 
-    --size 1024x512 \
+python benchmark_contextnet.py \
+    --size 2048x1024 \
     --device cuda:0 \
     --iterations 50 \
     --warmup 5      \

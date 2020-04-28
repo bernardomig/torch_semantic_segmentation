@@ -39,7 +39,7 @@ dtype = (torch.float32 if args.dtype == 'float32' else torch.float16)
 
 batch_size = args.batch_size
 width, height = args.size
-batch = torch.randn((batch_size, 3, width, height), device=device)
+batch = torch.randn((batch_size, 3, width, height), device=device, dtype=dtype)
 
 
 def create_model(name, in_channels, out_channels):
