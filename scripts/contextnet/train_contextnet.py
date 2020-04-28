@@ -36,7 +36,8 @@ parser.add_argument('--batch_size', type=int, required=True)
 parser.add_argument('--learning_rate', type=float, required=True)
 parser.add_argument('--weight_decay', type=float, default=1e-5)
 parser.add_argument('--epochs', type=int, required=True)
-parser.add_argument('--crop_size', type=int, default=768)
+parser.add_argument('--crop_size', type=str, default='768')
+parser.add_argument('--dataset', type=str, required=True)
 parser.add_argument('--state_dict', type=str, required=False)
 parser.add_argument('--distributed', action='store_true')
 parser.add_argument('--local_rank', type=int)
@@ -54,9 +55,18 @@ if local_rank == 0:
 
 device = torch.device('cuda')
 
+crop_size = args.crop_size.split('x')
+if len(crop_size) == 1:
+    width = height = int(crop_size[0])
+elif len(crop_size) == 2:
+    width, height = int(crop_size[0]), int(crop_size[1])
+else:
+    from logging import fatal
+    fatal("invalid crop_size")
+
 train_tfms = albu.Compose([
     albu.RandomScale([0.5, 2.0]),
-    albu.RandomCrop(args.crop_size, args.crop_size),
+    albu.RandomCrop(height, width),
     albu.HorizontalFlip(),
     albu.HueSaturationValue(),
     albu.Normalize(),
@@ -67,7 +77,7 @@ val_tfms = albu.Compose([
     ToTensor(),
 ])
 
-Dataset = create_dataset('cityscapes')
+Dataset = create_dataset(args.dataset)
 train_dataset = Dataset(split='train', transforms=train_tfms)
 val_dataset = Dataset(split='val', transforms=val_tfms)
 
@@ -108,9 +118,11 @@ optimizer = torch.optim.AdamW(
     weight_decay=args.weight_decay,
 )
 
-counts = torch.from_numpy(CityScapesDataset.CLASS_FREQ.astype('f4'))
-weight = 1. / torch.log(1.02 + counts)
-loss_fn = torch.nn.CrossEntropyLoss(ignore_index=255, weight=weight)
+
+loss_fn = OHEMLoss(ignore_index=255, numel_frac=0.05)
+# counts = torch.from_numpy(CityScapesDataset.CLASS_FREQ.astype('f4'))
+# weight = 1. / torch.log(1.02 + counts)
+# loss_fn = torch.nn.CrossEntropyLoss(ignore_index=255, weight=weight)
 loss_fn = loss_fn.cuda()
 
 
